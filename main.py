@@ -16,6 +16,7 @@ mcp = FastMCP(name="expense_tracker")
 def init_db():
     try:
         import sqlite3
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         with sqlite3.connect(DB_PATH) as c:
             c.execute("PRAGMA journal_mode=WAL")
             c.execute("""
