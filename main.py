@@ -170,7 +170,7 @@ def get_categories() :
         return f.read()
     
 @mcp.tool()
-async def add_money(amount, note=""):
+async def add_money(amount : int, note=""):
     """Add money (income/deposit) to your balance"""
     try:
         async with aiosqlite.connect(DB_PATH) as c:
@@ -185,7 +185,7 @@ async def add_money(amount, note=""):
 
 
 @mcp.tool()
-async def withdraw_money(amount, note=""):
+async def withdraw_money(amount : int, note=""):
     """Withdraw money from your balance"""
     try:
         async with aiosqlite.connect(DB_PATH) as c:
