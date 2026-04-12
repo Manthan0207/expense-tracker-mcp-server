@@ -49,7 +49,7 @@ init_db()
 
 
 @mcp.tool()
-async def add_expense(date, amount, category, subcategory="", note=""):
+async def add_expense(date : str, amount : float, category : str, subcategory : str="", note:str=""):
     '''Add expense and deduct from balance'''
     try:
         async with aiosqlite.connect(DB_PATH) as c:
@@ -67,6 +67,9 @@ async def add_expense(date, amount, category, subcategory="", note=""):
                 (date, amount, category, subcategory, note)
             )
             expense_id = cur.lastrowid
+            if expense_id is None:
+                return {"status": "error", "message": "Failed to get inserted expense id"}
+            
             
             # Deduct from balance
             await c.execute(
