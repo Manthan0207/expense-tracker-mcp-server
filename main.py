@@ -13,9 +13,8 @@ CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), "categories.json")
 mcp = FastMCP(name="expense_tracker")
 
 
-def init_db():  # Keep as sync for initialization
+def init_db():
     try:
-        # Use synchronous sqlite3 just for initialization
         import sqlite3
         with sqlite3.connect(DB_PATH) as c:
             c.execute("PRAGMA journal_mode=WAL")
@@ -29,14 +28,19 @@ def init_db():  # Keep as sync for initialization
                     note TEXT DEFAULT ''
                 )
             """)
-            # Test write access
-            c.execute("INSERT OR IGNORE INTO expenses(date, amount, category) VALUES ('2000-01-01', 0, 'test')")
-            c.execute("DELETE FROM expenses WHERE category = 'test'")
-            print("Database initialized successfully with write access")
+            # NEW: Balance table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS balance(
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    current_balance REAL DEFAULT 0
+                )
+            """)
+            c.execute("INSERT OR IGNORE INTO balance(id, current_balance) VALUES (1, 0)")
+            c.commit()
+            print("Database initialized successfully")
     except Exception as e:
         print(f"Database initialization error: {e}")
         raise
-    
     
 
 
@@ -45,20 +49,33 @@ init_db()
 
 
 @mcp.tool()
-async def add_expense(date, amount, category, subcategory="", note=""):  # Changed: added async
-    '''Add a new expense entry to the database.'''
+async def add_expense(date, amount, category, subcategory="", note=""):
+    '''Add expense and deduct from balance'''
     try:
-        async with aiosqlite.connect(DB_PATH) as c:  # Changed: added async
-            cur = await c.execute(  # Changed: added await
+        async with aiosqlite.connect(DB_PATH) as c:
+            # Check balance
+            cur = await c.execute("SELECT current_balance FROM balance WHERE id = 1")
+            row = await cur.fetchone()
+            current_balance = row[0] if row else 0
+            
+            if current_balance < amount:
+                return {"status": "error", "message": f"Insufficient balance. Current: {current_balance}"}
+            
+            # Add expense
+            cur = await c.execute(
                 "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
                 (date, amount, category, subcategory, note)
             )
             expense_id = cur.lastrowid
-            await c.commit()  # Changed: added await
-            return {"status": "success", "id": expense_id, "message": "Expense added successfully"}
-    except Exception as e:  # Changed: simplified exception handling
-        if "readonly" in str(e).lower():
-            return {"status": "error", "message": "Database is in read-only mode. Check file permissions."}
+            
+            # Deduct from balance
+            await c.execute(
+                "UPDATE balance SET current_balance = current_balance - ? WHERE id = 1",
+                (amount,)
+            )
+            await c.commit()
+            return {"status": "success", "id": expense_id, "message": "Expense added and deducted from balance"}
+    except Exception as e:
         return {"status": "error", "message": f"Database error: {str(e)}"}
     
     
@@ -81,6 +98,34 @@ async def list_expenses(start_date, end_date):  # Changed: added async
             return [dict(zip(cols, r)) for r in await cur.fetchall()]  # Changed: added await
     except Exception as e:
         return {"status": "error", "message": f"Error listing expenses: {str(e)}"}
+    
+
+@mcp.tool()
+async def delete_expense(expense_id):
+    """Delete expense and refund balance"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as c:
+            # Get expense amount first
+            cur = await c.execute("SELECT amount FROM expenses WHERE id = ?", (expense_id,))
+            row = await cur.fetchone()
+            
+            if not row:
+                return {"status": "error", "message": f"No expense found with id {expense_id}"}
+            
+            amount = row[0]
+            
+            # Delete expense
+            await c.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+            
+            # Refund balance
+            await c.execute(
+                "UPDATE balance SET current_balance = current_balance + ? WHERE id = 1",
+                (amount,)
+            )
+            await c.commit()
+            return {"status": "success", "message": f"Expense deleted. Refunded {amount}"}
+    except Exception as e:
+        return {"status": "error", "message": f"Error: {str(e)}"}
     
     
 @mcp.tool()
@@ -120,6 +165,56 @@ def get_categories() :
     """Get Categories to add the most related category and subcategory."""
     with open(CATEGORIES_PATH , "r" , encoding='utf-8') as f :
         return f.read()
+    
+@mcp.tool()
+async def add_money(amount, note=""):
+    """Add money (income/deposit) to your balance"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as c:
+            await c.execute(
+                "UPDATE balance SET current_balance = current_balance + ? WHERE id = 1",
+                (amount,)
+            )
+            await c.commit()
+            return {"status": "success", "message": f"Added {amount} to balance"}
+    except Exception as e:
+        return {"status": "error", "message": f"Error: {str(e)}"}
+
+
+@mcp.tool()
+async def withdraw_money(amount, note=""):
+    """Withdraw money from your balance"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as c:
+            # Check if enough balance
+            cur = await c.execute("SELECT current_balance FROM balance WHERE id = 1")
+            row = await cur.fetchone()
+            current = row[0] if row else 0
+            
+            if current < amount:
+                return {"status": "error", "message": f"Insufficient balance. Current: {current}"}
+            
+            await c.execute(
+                "UPDATE balance SET current_balance = current_balance - ? WHERE id = 1",
+                (amount,)
+            )
+            await c.commit()
+            return {"status": "success", "message": f"Withdrew {amount}. New balance: {current - amount}"}
+    except Exception as e:
+        return {"status": "error", "message": f"Error: {str(e)}"}
+
+
+@mcp.tool()
+async def get_balance():
+    """Get current account balance"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as c:
+            cur = await c.execute("SELECT current_balance FROM balance WHERE id = 1")
+            row = await cur.fetchone()
+            balance = row[0] if row else 0
+            return {"balance": balance}
+    except Exception as e:
+        return {"status": "error", "message": f"Error: {str(e)}"}
     
 if __name__ == "__main__" :
     mcp.run(transport="http" , host="0.0.0.0" , port=8000)
